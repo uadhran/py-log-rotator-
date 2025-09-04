@@ -1,230 +1,160 @@
 #!/usr/bin/env python3
-"""
-Advanced Log Management System
-Handles multiple log files with size-based and time-based rotation
-"""
 
 import os
+import glob
 import gzip
 import shutil
-import logging
-from datetime import datetime, timedelta
-from pathlib import Path
 import argparse
+import logging
+import json
+from datetime import datetime, timedelta
+import subprocess  # For potential Airflow integration, but not used here
 
-class LogManager:
-    def __init__(self, log_directory, max_size_mb=20, max_age_days=30, max_files=5):
-        self.log_directory = Path(log_directory)
-        self.max_size_bytes = max_size_mb * 1024 * 1024
-        self.max_age_days = max_age_days
-        self.max_files = max_files
-        
-        # Setup logging for this script
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
-    
-    def get_file_size(self, file_path):
-        """Get file size in bytes"""
-        try:
-            return file_path.stat().st_size
-        except OSError:
-            return 0
-    
-    def get_file_age(self, file_path):
-        """Get file age in days"""
-        try:
-            modified_time = datetime.fromtimestamp(file_path.stat().st_mtime)
-            return (datetime.now() - modified_time).days
-        except OSError:
-            return 0
-    
-    def compress_file(self, file_path):
-        """Compress file using gzip"""
-        compressed_path = file_path.with_suffix(file_path.suffix + '.gz')
-        
-        try:
-            with open(file_path, 'rb') as f_in:
-                with gzip.open(compressed_path, 'wb') as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            
-            file_path.unlink()  # Remove original file
-            self.logger.info(f"Compressed: {file_path} -> {compressed_path}")
-            return compressed_path
-        
-        except Exception as e:
-            self.logger.error(f"Failed to compress {file_path}: {e}")
-            return None
-    
-    def rotate_log(self, log_file):
-        """Rotate log file with timestamp"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        rotated_name = f"{log_file.stem}_{timestamp}{log_file.suffix}"
-        rotated_path = log_file.parent / rotated_name
-        
-        try:
-            log_file.rename(rotated_path)
-            
-            # Create new empty log file
-            log_file.touch()
-            
-            self.logger.info(f"Rotated: {log_file} -> {rotated_path}")
-            
-            # Compress the rotated file
-            compressed = self.compress_file(rotated_path)
-            return compressed or rotated_path
-        
-        except Exception as e:
-            self.logger.error(f"Failed to rotate {log_file}: {e}")
-            return None
-    
-    def clean_old_logs(self, pattern="*.log*"):
-        """Remove logs older than max_age_days"""
-        removed_count = 0
-        
-        for log_file in self.log_directory.glob(pattern):
-            if self.get_file_age(log_file) > self.max_age_days:
-                try:
-                    log_file.unlink()
-                    self.logger.info(f"Removed old log: {log_file}")
-                    removed_count += 1
-                except Exception as e:
-                    self.logger.error(f"Failed to remove {log_file}: {e}")
-        
-        return removed_count
-    
-    def limit_log_files(self, pattern="*.log.gz"):
-        """Keep only the most recent log files"""
-        log_files = list(self.log_directory.glob(pattern))
-        
-        if len(log_files) <= self.max_files:
-            return 0
-        
-        # Sort by modification time (newest first)
-        log_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-        
-        removed_count = 0
-        for old_file in log_files[self.max_files:]:
-            try:
-                old_file.unlink()
-                self.logger.info(f"Removed excess log: {old_file}")
-                removed_count += 1
-            except Exception as e:
-                self.logger.error(f"Failed to remove {old_file}: {e}")
-        
-        return removed_count
-    
-    def manage_single_log(self, log_file_path):
-        """Manage a single log file"""
-        log_file = Path(log_file_path)
-        
-        if not log_file.exists():
-            self.logger.warning(f"Log file does not exist: {log_file}")
-            return False
-        
-        file_size = self.get_file_size(log_file)
-        size_mb = file_size / (1024 * 1024)
-        
-        self.logger.info(f"Checking {log_file}: {size_mb:.2f}MB")
-        
-        if file_size > self.max_size_bytes:
-            self.logger.info(f"Log size ({size_mb:.2f}MB) exceeds limit ({self.max_size_bytes/(1024*1024)}MB)")
-            return self.rotate_log(log_file) is not None
-        
-        return True
-    
-    def manage_all_logs(self, pattern="*.log"):
-        """Manage all log files in the directory"""
-        results = {
-            'processed': 0,
-            'rotated': 0,
-            'cleaned': 0,
-            'limited': 0
-        }
-        
-        # Process active log files
-        for log_file in self.log_directory.glob(pattern):
-            results['processed'] += 1
-            if self.get_file_size(log_file) > self.max_size_bytes:
-                if self.rotate_log(log_file):
-                    results['rotated'] += 1
-        
-        # Clean old logs
-        results['cleaned'] = self.clean_old_logs()
-        
-        # Limit number of archived logs
-        results['limited'] = self.limit_log_files()
-        
-        return results
-    
-    def get_directory_stats(self):
-        """Get statistics about the log directory"""
-        stats = {
-            'total_files': 0,
-            'total_size_mb': 0,
-            'active_logs': 0,
-            'archived_logs': 0
-        }
-        
-        for file_path in self.log_directory.iterdir():
-            if file_path.is_file():
-                stats['total_files'] += 1
-                stats['total_size_mb'] += self.get_file_size(file_path) / (1024 * 1024)
-                
-                if file_path.suffix == '.log':
-                    stats['active_logs'] += 1
-                elif '.log' in file_path.name:
-                    stats['archived_logs'] += 1
-        
-        return stats
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-def main():
-    parser = argparse.ArgumentParser(description='Advanced Log Management System')
-    parser.add_argument('--log-dir', default='/var/log', help='Log directory path')
-    parser.add_argument('--max-size', type=int, default=20, help='Max log size in MB')
-    parser.add_argument('--max-age', type=int, default=30, help='Max log age in days')
-    parser.add_argument('--max-files', type=int, default=5, help='Max archived files to keep')
-    parser.add_argument('--single-file', help='Manage single log file')
-    parser.add_argument('--stats', action='store_true', help='Show directory statistics')
+def load_config(config_data=None, config_file=None):
+    """Load configuration from JSON data or file."""
+    if config_data:
+        return json.loads(config_data)
+    elif config_file:
+        with open(config_file, 'r') as f:
+            return json.load(f)
+    else:
+        raise ValueError("No configuration provided.")
+
+def discover_logs(parent_dir, configs):
+    """Discover log files in subdirectories based on configs."""
+    discovered = {}
+    for config in configs:
+        if not config.get('enabled', True):
+            continue
+        parent = config['parent_directory']
+        if parent_dir and parent != parent_dir:
+            continue  # Filter by parent_dir if specified
+        sub_configs = config['subdirectory_configs']
+        for subdir, subdir_config in sub_configs.items():
+            full_dir = os.path.join(parent, subdir) if subdir != 'default' else parent
+            pattern = subdir_config.get('pattern', '*.log')
+            files = glob.glob(os.path.join(full_dir, pattern))
+            discovered[full_dir] = {
+                'files': files,
+                'config': subdir_config
+            }
+    return discovered
+
+def rotate_log(file_path, max_size_mb, dry_run=False):
+    """Rotate log if it exceeds max size."""
+    size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    if size_mb > max_size_mb:
+        rotated_path = f"{file_path}.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        logger.info(f"Rotating {file_path} to {rotated_path} (size: {size_mb:.2f}MB > {max_size_mb}MB)")
+        if not dry_run:
+            shutil.move(file_path, rotated_path)
+        return rotated_path
+    return None
+
+def compress_file(file_path, dry_run=False):
+    """Compress file with gzip."""
+    compressed_path = f"{file_path}.gz"
+    logger.info(f"Compressing {file_path} to {compressed_path}")
+    if not dry_run:
+        with open(file_path, 'rb') as f_in:
+            with gzip.open(compressed_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        os.remove(file_path)
+    return compressed_path
+
+def cleanup_old_logs(files, max_age_days, dry_run=False):
+    """Cleanup files older than max_age_days."""
+    now = datetime.now()
+    deleted = []
+    for file in files:
+        mtime = datetime.fromtimestamp(os.path.getmtime(file))
+        age_days = (now - mtime).days
+        if age_days > max_age_days:
+            logger.info(f"Deleting {file} (age: {age_days} days > {max_age_days} days)")
+            if not dry_run:
+                os.remove(file)
+            deleted.append(file)
+    return deleted
+
+def generate_report(discovered, rotated, compressed, deleted, space_freed):
+    """Generate a summary report."""
+    report = {
+        'directories_managed': len(discovered),
+        'files_processed': sum(len(info['files']) for info in discovered.values()),
+        'files_rotated': len(rotated),
+        'files_compressed': len(compressed),
+        'files_deleted': len(deleted),
+        'space_freed_mb': space_freed / (1024 * 1024),
+        'timestamp': datetime.now().isoformat()
+    }
+    return report
+
+def process_logs(parent_dir=None, config_data=None, config_file=None, report_only=False, dry_run=False, verbose=False):
+    """Main log processing function."""
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+    
+    configs = load_config(config_data, config_file)
+    discovered = discover_logs(parent_dir, configs)
+    
+    rotated = []
+    compressed = []
+    deleted = []
+    space_freed = 0
+    
+    if report_only:
+        logger.info("Generating report only.")
+        report = generate_report(discovered, rotated, compressed, deleted, space_freed)
+        print(json.dumps(report, indent=2))
+        return report
+    
+    for dir_path, info in discovered.items():
+        files = info['files']
+        config = info['config']
+        max_size_mb = config['max_size_mb']
+        max_age_days = config['max_age_days']
+        
+        for file in files:
+            rotated_path = rotate_log(file, max_size_mb, dry_run)
+            if rotated_path:
+                rotated.append(rotated_path)
+                comp_path = compress_file(rotated_path, dry_run)
+                if comp_path:
+                    compressed.append(comp_path)
+                    # Calculate space freed (approx: original size - compressed size)
+                    orig_size = os.path.getsize(file) if not dry_run else 0
+                    comp_size = os.path.getsize(comp_path) if not dry_run else 0
+                    space_freed += orig_size - comp_size
+        
+        # Cleanup after rotation
+        updated_files = glob.glob(os.path.join(dir_path, config['pattern']))
+        del_files = cleanup_old_logs(updated_files, max_age_days, dry_run)
+        deleted.extend(del_files)
+        space_freed += sum(os.path.getsize(f) for f in del_files if not dry_run)
+    
+    report = generate_report(discovered, rotated, compressed, deleted, space_freed)
+    print(json.dumps(report, indent=2))
+    return report
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="py-log-rotator: Log rotation and management.")
+    parser.add_argument('--parent-dir', type=str, help='Parent directory containing scattered logs')
+    parser.add_argument('--config-file', type=str, help='JSON configuration file')
+    parser.add_argument('--report', action='store_true', help='Generate summary report only')
+    parser.add_argument('--dry-run', action='store_true', help='Show what would be done without making changes')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--help', action='help', help='Show this help message')
     
     args = parser.parse_args()
     
-    # Create log manager instance
-    log_manager = LogManager(
-        log_directory=args.log_dir,
-        max_size_mb=args.max_size,
-        max_age_days=args.max_age,
-        max_files=args.max_files
+    process_logs(
+        parent_dir=args.parent_dir,
+        config_file=args.config_file,
+        report_only=args.report,
+        dry_run=args.dry_run,
+        verbose=args.verbose
     )
-    
-    if args.stats:
-        stats = log_manager.get_directory_stats()
-        print(f"Log Directory Statistics:")
-        print(f"  Total files: {stats['total_files']}")
-        print(f"  Total size: {stats['total_size_mb']:.2f} MB")
-        print(f"  Active logs: {stats['active_logs']}")
-        print(f"  Archived logs: {stats['archived_logs']}")
-        return
-    
-    if args.single_file:
-        # Manage single file
-        success = log_manager.manage_single_log(args.single_file)
-        print(f"Single file management: {'Success' if success else 'Failed'}")
-    else:
-        # Manage all logs in directory
-        results = log_manager.manage_all_logs()
-        print(f"Log management results:")
-        print(f"  Files processed: {results['processed']}")
-        print(f"  Files rotated: {results['rotated']}")
-        print(f"  Old files cleaned: {results['cleaned']}")
-        print(f"  Excess files removed: {results['limited']}")
-
-if __name__ == "__main__":
-    main()
-
-# Example usage:
-# python log_manager.py --log-dir /var/log/myapp --max-size 50 --max-age 7
-# python log_manager.py --single-file /var/log/app.log
-# python log_manager.py --stats

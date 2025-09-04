@@ -1,0 +1,29 @@
+[
+    {
+        "name": "application_logs",
+        "parent_directory": "/var/log/myapp",
+        "subdirectory_configs": {
+            "api": {
+                "max_size_mb": 100,
+                "max_age_days": 7,
+                "pattern": "*.log"
+            },
+            "database": {
+                "max_size_mb": 200,
+                "max_age_days": 14,
+                "pattern": "*.log"
+            },
+            "nginx": {
+                "max_size_mb": 500,
+                "max_age_days": 30,
+                "pattern": "*.log"
+            },
+            "default": {
+                "max_size_mb": 50,
+                "max_age_days": 7,
+                "pattern": "*.log"
+            }
+        },
+        "enabled": true
+    }
+]

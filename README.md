@@ -412,7 +412,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 📖 **Documentation**: Check our [Wiki](https://github.com/yourusername/py-log-rotator/wiki)
 - 💬 **Discussions**: Join our [GitHub Discussions](https://github.com/yourusername/py-log-rotator/discussions)  
 - 🐛 **Issues**: Report bugs on [GitHub Issues](https://github.com/yourusername/py-log-rotator/issues)
-- 📧 **Email**: Contact the maintainer at your-email@company.com
+- 📧 **Email**: Contact the maintainer at your-utadhran@gmail.com
 
 ---
 

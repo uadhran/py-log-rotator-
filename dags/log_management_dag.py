@@ -34,7 +34,7 @@ def health_check(**context):
     # Check disk space, permissions, etc.
     if os.path.exists('/var/log') and os.access('/var/log', os.W_OK):
         logging.info("Health check passed.")
-        return 'execute_logs'
+        return 'execution_mode_decision'
     else:
         logging.error("Health check failed.")
         return 'send_error_email'
@@ -56,33 +56,58 @@ def aggregate_results(**context):
     report = context['ti'].xcom_pull(key='report')
     return report
 
-# HTML email template (embedded for simplicity)
-email_template = """
+def render_email_task(**context):
+    """Render email HTML from report data."""
+    # HTML email template
+    email_template = """
 <!DOCTYPE html>
 <html>
-<head><style>body {font-family: Arial;} .status {color: green;}</style></head>
+<head><style>
+    body {font-family: Arial, sans-serif; padding: 20px;}
+    .status {color: green; font-weight: bold;}
+    table {border-collapse: collapse; width: 100%; margin: 20px 0;}
+    th, td {border: 1px solid #ddd; padding: 8px; text-align: left;}
+    th {background-color: #4CAF50; color: white;}
+</style></head>
 <body>
 <h1>Log Rotation Report</h1>
 <p>Status: <span class="status">Success</span></p>
-<ul>
-    <li>Directories Managed: {{ directories_managed }}</li>
-    <li>Files Processed: {{ files_processed }}</li>
-    <li>Space Freed: {{ space_freed_mb }} MB</li>
-</ul>
-<p>Timestamp: {{ timestamp }}</p>
+<table>
+    <tr><th>Metric</th><th>Value</th></tr>
+    <tr><td>Directories Managed</td><td>{{ directories_managed }}</td></tr>
+    <tr><td>Files Processed</td><td>{{ files_processed }}</td></tr>
+    <tr><td>Files Rotated</td><td>{{ files_rotated }}</td></tr>
+    <tr><td>Files Compressed</td><td>{{ files_compressed }}</td></tr>
+    <tr><td>Files Deleted</td><td>{{ files_deleted }}</td></tr>
+    <tr><td>Space Freed</td><td>{{ space_freed_mb }} MB</td></tr>
+</table>
+<p><small>Report generated at: {{ timestamp }}</small></p>
 </body>
 </html>
 """
 
-def render_email(report):
+    report = context['ti'].xcom_pull(task_ids='aggregate_results')
+    if not report:
+        report = {
+            'directories_managed': 0,
+            'files_processed': 0,
+            'files_rotated': 0,
+            'files_compressed': 0,
+            'files_deleted': 0,
+            'space_freed_mb': 0,
+            'timestamp': datetime.now().isoformat()
+        }
+
     template = jinja2.Template(email_template)
-    return template.render(**report)
+    rendered_html = template.render(**report)
+    context['ti'].xcom_push(key='email_html', value=rendered_html)
+    return rendered_html
 
 send_report_email = EmailOperator(
     task_id='send_report_email',
     to='your-email@company.com',  # Configure in airflow.cfg
-    subject='Log Rotation Summary',
-    html_content="{{ ti.xcom_pull(task_ids='aggregate_results') | render_email }}",  # Jinja in email
+    subject='Log Rotation Summary - {{ ds }}',
+    html_content="{{ ti.xcom_pull(task_ids='render_email', key='email_html') }}",
     dag=dag,
 )
 
@@ -119,6 +144,12 @@ aggregate_task = PythonOperator(
     dag=dag,
 )
 
+render_email_task_op = PythonOperator(
+    task_id='render_email',
+    python_callable=render_email_task,
+    dag=dag,
+)
+
 # Task flow
-health_check_task >> mode_decision_task >> manage_logs_task >> aggregate_task >> send_report_email
+health_check_task >> mode_decision_task >> manage_logs_task >> aggregate_task >> render_email_task_op >> send_report_email
 health_check_task >> send_error_email
